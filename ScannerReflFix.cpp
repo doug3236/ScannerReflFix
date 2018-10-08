@@ -1,0 +1,208 @@
+/*
+Copyright (c) <2018> <doug gray>
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+*/
+
+#include <vector>
+#include <iostream>
+#include "ArgumentParse.h"
+#include "tiffresults.h"
+#include <array>
+#include <fstream>
+#include <algorithm>
+#include <future>
+
+using namespace std;
+
+string profile_name{ "" };              // optional file name of profile to attach to corrected image
+bool force_16_bits = false;             // Force 16 bit output file. 8 bit input files default to 8 bit output files
+bool adjust_to_detected_white = false;  // Scales output values so that the largest .01% of pixels are maxed (255)
+bool save_intermediate_files = false;   // Saves various intermediate files for debugging
+bool no_gain_restore = false;           // Just subtract reflected light estimate. Normal operation restores L* match
+bool simulate_reflected_light = false; // generate an image estimate of scanner's re-reflected light addition.
+float edge_reflectance=.85f;            // average reflected light of area outside of scan crop (if black: .01)
+bool print_line_and_time = false;       // print line number and time since start for each major phase of process
+
+
+int main(int argc, char const **argv)
+{
+    Timer timer;
+    vector<string> cmdArgs = vectorize_commands(argc, argv);
+
+    // process options, all options must be valid and at least one file argument remaining
+    try
+    {
+        procFlag("-S", cmdArgs, edge_reflectance);
+        procFlag("-W", cmdArgs, adjust_to_detected_white);
+        procFlag("-P", cmdArgs, profile_name);
+        procFlag("-R", cmdArgs, simulate_reflected_light);
+        procFlag("-I", cmdArgs, save_intermediate_files);
+        procFlag("-N", cmdArgs, no_gain_restore);
+		procFlag("-H", cmdArgs, force_16_bits);
+		procFlag("-T", cmdArgs, print_line_and_time);
+		if (cmdArgs.size() == 1)
+                throw("command line error\n");
+    }
+    catch (const char *e)
+    {
+        cout << e << endl;
+        cout << "Version 1.0:\n"
+            "Usage: scannerreflfix [-I] [-W] -[P ProfileFileName] [-S EdgeRefl] infile.tif outfile.tif\n" <<
+			"  -H                   Force 16 bit tif output]\n" <<
+            "  -W                   Maximize white (Like Relative Col with tint retention)\n" <<
+            "  -P profile           Attach profile <profile.icc>\n" <<
+            "  -S edge_refl         ave refl outside of scanned area (0 to 1, default: .85)\n\n" <<
+			"                       Test options\n" <<
+			"  -I                   Save intermediate files\n" <<
+			"  -T                   Show line numbers and accumulated time.\n" <<
+			"  -N                   Don't Restore gain after subtracting reflection (Diagnostic only)\n" <<
+			"  -R                   Simulated scanner by adding reflected light\n" <<
+			"scannerreflfix.exe models and removes, re-reflected light from an area\n"
+			"approx 1\" around scanned RGB values for the Epson V850 scanner.\n";
+            exit(0);
+    }
+
+    // Create an image with simulated reflected light added from standard tif image
+    // useful for simulating the effect of the re-reflected scanner light
+    if (simulate_reflected_light) {
+        cout <<"Simulating reflected light for V800/V850\n";
+    }
+    else
+        cout <<"Correcting reflected light for V800/V850\n";
+    try {
+		// get first argument (uncorrected from image)
+        ArrayRGB image_in = TiffRead(cmdArgs[1].c_str(), 1.7f);
+
+		// Get image that represents the light spread that is additive to the center's pixel location
+		// x2: number of times DPI divisable by 2, x3:  number of times DPI divisable by 3
+        auto [refl_area, x2, x3] = getReflArea(image_in.dpi);
+		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;
+
+
+        // Add 1" margin around image_in since light is re-reflected over around an inch
+        int margins = image_in.dpi;
+        ArrayRGB in_expanded{ image_in.nr+2*margins, image_in.nc+2*margins, image_in.dpi, image_in.from_16bits, image_in.gamma };
+        in_expanded.fill(edge_reflectance, edge_reflectance, edge_reflectance);             // assume border "white" reflected 85% of kight.
+        in_expanded.copy(image_in, margins, margins);   // insert into expanded image with 1" margins
+
+		// for getting estimated reflected light spread
+		if (save_intermediate_files)
+		{
+			cout << "Saving reflarray.tif, image of additional reflected light in gamma = 2.2" << endl;
+			refl_area.gamma = 2.2f;      // write gamma for compatibility with aRGB
+			TiffWrite("reflArray.tif", refl_area, "", false);
+		}
+		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;
+
+        // Create downsized image to calculate reflected light from
+        // This does not require or need high resolution.
+        ArrayRGB image_reduced=in_expanded;
+		int reduction = image_in.dpi/refl_area.dpi;
+
+		// Downsize image to create a reflected light version, use 3x downsize initially for speed
+		while (x3--)
+			image_reduced = downsample(image_reduced, 3);
+		while (x2--)
+			image_reduced = downsample(image_reduced, 2);
+		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;
+
+
+        // save downsampled file with added margin
+        if (save_intermediate_files)
+        {
+            cout << "Saving imagorig.tif, reduced original file with surround in gamma=2.2" << endl;
+			image_reduced.gamma = 2.2f;      // write gamma for compatibility wiht aRGB
+            TiffWrite("imageorig.tif", image_reduced, "");
+        }
+
+  
+		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;
+		ArrayRGB image_correction = generate_reflected_light_estimate(image_reduced, refl_area);
+		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;
+
+        // save the estimated re-reflected light from the full scanned image and surround
+        if (save_intermediate_files)
+        {
+            cout << "Saving refl_light.tif, image of estimated reflected light" << endl;
+            image_correction.gamma = 2.2f;      // write gamma for compatibility with aRGB and sRGB
+            TiffWrite("refl_light.tif", image_correction, "");
+        }
+
+        // Subtract re-reflected light from original
+        for (int color = 0; color < 3; color++)
+        {
+            for (int i = 0; i < image_in.nr; i++)
+            {
+                for (int ii = 0; ii < image_in.nc; ii++)
+                {
+                    //auto tmp = image_in(i, ii, color)-image_correction(i/reduction, ii/reduction, color)*image_in(i, ii, color);
+                    float tmp;
+                    if (simulate_reflected_light) {
+                        tmp = image_in(i, ii, color)+bilinear(image_correction, i, ii, reduction, color)*image_in(i, ii, color);
+                        tmp *= .785f/.876f;
+                    }
+                    else {
+                        tmp = image_in(i, ii, color)-bilinear(image_correction, i, ii, reduction, color)*image_in(i, ii, color);
+                        // gain restore  adjusts gain to offset reduction from re-reflected light subtraction
+                        tmp = tmp * (no_gain_restore ? 1.0f : .876f/.785f);
+                    }
+					image_in(i, ii, color) = std::clamp(tmp, 0.f, 1.f);
+                }
+            }
+        }
+
+        // Adjust for Relative Colorimetric w/o shift to WP (no tint change)
+        // Should not be used to process scanner profiling patch scans
+        if (adjust_to_detected_white)
+        {
+            float maxcolor = 0;
+            for (int i = 0; i < 3; i++)
+            {
+                vector<float> color(image_in.v[i]);
+                sort(color.begin(), color.end());
+                float high = *(color.end()-(1+color.size()/10000));
+                if (high > maxcolor) maxcolor = high;
+            }
+            image_in.scale(1/maxcolor);
+        }
+
+		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;
+		if (force_16_bits)
+			image_in.from_16bits = true;
+        TiffWrite(cmdArgs[2].c_str(), image_in, profile_name);
+		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;
+
+    }
+    catch (const char *e)
+    {
+        cout << e << "\nPress enter to exit\n";
+        char tmp[10];
+        cin.getline(tmp, 1);
+    }
+    catch (const std::exception &e)
+    {
+        cout << e.what() << endl;
+    }
+    catch (...) {
+        cout << "unknown exception\n";
+    }
+
+}
+
