@@ -36,7 +36,7 @@ made from the same printer. However, metameric failure shift will occur when sca
 spectral content and will produce large deltaE00 variations. This is also a problem using standard IT8 charts for profiling
 since other scanned media will virtually always differ spectrally. However, this fixup program is effective with standard
 IT8 profiles as well but must be used on the raw scan and not a scan with a previously applied profile such as Adobe RGB.
-
+```
 Commands:
 Version 1.1
 Usage: scannerreflfix [ zero or more options] infile.tif outfile.tif
@@ -51,4 +51,4 @@ Usage: scannerreflfix [ zero or more options] infile.tif outfile.tif
 -N                   Don't Restore gain after subtracting reflection (Diagnostic only)
 -R                   Simulated scanner by adding reflected light
 -Z                   Average multiple input files with No Refl. Correction
-       
+```    
