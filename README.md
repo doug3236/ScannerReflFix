@@ -39,16 +39,16 @@ IT8 profiles as well but must be used on the raw scan and not a scan with a prev
 
 Commands:
 Version 1.1
-    Usage: scannerreflfix [ zero or more options] infile.tif outfile.tif
-      -A                   Correct Image Already in Adobe RGB
-      -F 8|16              Force 8 or 16 bit tif output
-      -W                   Maximize white (Like Relative Col with tint retention)
-      -P profile           Attach profile <profile.icc>
-      -S edge_refl         ave refl outside of scanned area (0 to 1, default: .85)
-                           Test options
-      -I                   Save intermediate files
-      -T                   Show line numbers and accumulated time.
-      -N                   Don't Restore gain after subtracting reflection (Diagnostic only)
-      -R                   Simulated scanner by adding reflected light
-      -Z                   Average multiple input files with No Refl. Correction
+Usage: scannerreflfix [ zero or more options] infile.tif outfile.tif
+-A                   Correct Image Already in Adobe RGB
+-F 8|16              Force 8 or 16 bit tif output
+-W                   Maximize white (Like Relative Col with tint retention)
+-P profile           Attach profile <profile.icc>
+-S edge_refl         ave refl outside of scanned area (0 to 1, default: .85)
+                     Test options
+-I                   Save intermediate files
+-T                   Show line numbers and accumulated time.
+-N                   Don't Restore gain after subtracting reflection (Diagnostic only)
+-R                   Simulated scanner by adding reflected light
+-Z                   Average multiple input files with No Refl. Correction
        
