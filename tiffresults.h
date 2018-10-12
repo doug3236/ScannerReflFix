@@ -39,13 +39,21 @@ SOFTWARE.
 #include <chrono>
 #include <future>
 
+// Common std types
+using std::vector;
+using std::string;
+using std::array;
+using std::ifstream;
+using std::ios_base;
+using std::ios;
+using std::tuple;
+
+
 class ArrayRGB;
 // Functions
-void TiffWrite(const char *file, const ArrayRGB &rgb, const std::string &profile, bool adj_following_cells = true);
+void TiffWrite(const char *file, const ArrayRGB &rgb, const string &profile, bool adj_following_cells = true);
 ArrayRGB TiffRead(const char *filename, float gamma);
-std::tuple<ArrayRGB, int, int> getReflArea(const int dpi, const int use_this_size_if_not_0 = 0);
-
-
+tuple<ArrayRGB, int, int> getReflArea(const int dpi, const int use_this_size_if_not_0 = 0);
 ArrayRGB generate_reflected_light_estimate(const ArrayRGB& image_reduced, const ArrayRGB& refl_area);
 
 
@@ -74,8 +82,8 @@ struct Timer {
 // and so can be easily multi-threaded. Values are normally in gamma=1 and are [0:1]
 class ArrayRGB {
 public:
-    std::vector<float> v[3];
-    std::vector<uint8> profile;     // size is zero if no profile attached to image
+    vector<float> v[3];
+    vector<uint8> profile;     // size is zero if no profile attached to image
     int dpi;
     int nc, nr;
     float gamma;
@@ -92,7 +100,7 @@ public:
     float & operator()(int r, int c, int color) { return v[color][r*nc+c]; }
 	//float & operator()(int r, int c, int color);
     float const & operator()(int r, int c, int color) const {return v[color][r*nc+c];}
-    std::array<float, 3> sum();
+    array<float, 3> sum();
     void scale(float factor);    // scale all array values by factor
 };
 
@@ -129,7 +137,7 @@ inline ArrayRGB downsample(const ArrayRGB &from, int rate)
 
 	ArrayRGB ret(nr, nc);
 	// fspecial('gaussian',5,1.2)
-	std::array<std::array<float, 5>, 5> smooth{
+	array<array<float, 5>, 5> smooth{
 		0.0073f,    0.0208f,    0.0294f,    0.0208f,    0.0073f,
 		0.0208f,    0.0589f,    0.0833f,    0.0589f,    0.0208f,
 		0.0294f,    0.0833f,    0.1179f,    0.0833f,    0.0294f,

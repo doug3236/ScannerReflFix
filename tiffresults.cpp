@@ -40,12 +40,14 @@ ArrayRGB TiffRead(const char *filename, float gamma)
     uint32 height;              // image pixe sizes
     uint32 width;
     uint32 size;                // width*height
+    uint16 planarconfig;
+    uint16  samplesperpixel;
+
     int dpi;
-    std::vector<uint32> image;
+    vector<uint32> image;
     //uint32 *image;      // packed RGB array 0xRRGGBB, refers to either a full, synthesized colorspace or tiff image
     TIFF *tif;
 
-    rgb.gamma = gamma;
     tif = TIFFOpen(filename, "r");
     if (tif == 0)
     {
@@ -57,6 +59,8 @@ ArrayRGB TiffRead(const char *filename, float gamma)
     TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
     TIFFGetField(tif, TIFFTAG_XRESOLUTION, &local_dpi);       // assume Xand Y the same
     TIFFGetField(tif, TIFFTAG_ICCPROFILE, &prof_size, &prof_data);
+    TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &planarconfig);
+    TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &samplesperpixel);
     if (prof_size!=0)
     {
         rgb.profile.resize(prof_size);
@@ -95,21 +99,29 @@ ArrayRGB TiffRead(const char *filename, float gamma)
     else
     {
         rgb.from_16bits = true;
-        auto imsize_8 = TIFFStripSize(tif);
-        if (imsize_8/6!=width) throw "tif file must have scan line length equal to width";
-        std::vector<std::array<uint16, 3>> buf(imsize_8/6);
-        uint32 loc = 0;
-        for (loc = 0; loc < height; loc++)
-        {
-            tmsize_t count = TIFFReadEncodedStrip(tif, loc, buf.data(), 6*buf.size());
-            if (count != 6*buf.size()) throw "incorrect line length";
-            for (uint32 i = 0; i < width; i++)
+        uint32 row, col;
+        uint16 config, nsamples;
+
+        TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
+        TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width);
+        TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &config);
+        TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &nsamples);
+        auto xxx = TIFFScanlineSize(tif);
+        vector<uint16_t> bufs(10000);
+        if (config == PLANARCONFIG_CONTIG) {
+            for (row = 0; row < height; row++)
             {
-                rgb(loc, i, 0) = pow(float(buf[i][0])/65535, gamma);
-                rgb(loc, i, 1) = pow(float(buf[i][1])/65535, gamma);
-                rgb(loc, i, 2) = pow(float(buf[i][2])/65535, gamma);
+                tmsize_t count = TIFFReadScanline(tif, bufs.data(), row);
+                for (col = 0; col < width; col++)
+                {
+                    rgb(row, col, 0) = pow(1.0f*bufs[col*nsamples + 0]/65535, gamma);
+                    rgb(row, col, 1) = pow(1.0f*bufs[col*nsamples + 1] / 65535, gamma);
+                    rgb(row, col, 2) = pow(1.0f*bufs[col*nsamples + 2] / 65535, gamma);
+                }
             }
         }
+        else
+            throw "16 bit file type not supported";
     }
     return rgb;
 }
@@ -125,8 +137,8 @@ void ArrayRGB::fill(float red, float green, float blue) {
 
 void ArrayRGB::copy(const ArrayRGB &from, int offsetx, int offsety)
 {
-    assert(from.nr + offsetx < nr);
-    assert(from.nc + offsety < nc);
+    //assert(from.nr + offsetx < nr);
+    //assert(from.nc + offsety < nc);
     for (int color = 0; color < 3; color++)
         for (int x = 0; x < from.nr; x++)
             for (int y = 0; y < from.nc; y++)
@@ -159,11 +171,11 @@ void ArrayRGB::copyRow(int to, int from)
             (*this)(to, c, color) = (*this)(from, c, color);
 }
 
-std::array<float, 3> ArrayRGB::sum() {
-    std::array<float, 3> ret;
-    ret[0] = std::accumulate(v[0].cbegin(), v[0].cend(), 0.f);
-    ret[1] = std::accumulate(v[1].cbegin(), v[1].cend(), 0.f);
-    ret[2] = std::accumulate(v[2].cbegin(), v[2].cend(), 0.f);
+array<float, 3> ArrayRGB::sum() {
+    array<float, 3> ret;
+    ret[0] = accumulate(v[0].cbegin(), v[0].cend(), 0.f);
+    ret[1] = accumulate(v[1].cbegin(), v[1].cend(), 0.f);
+    ret[2] = accumulate(v[2].cbegin(), v[2].cend(), 0.f);
     return ret;
 }
 
@@ -175,7 +187,7 @@ void ArrayRGB::scale(float factor)    // scale all array values by factor
 }
 
 
-void TiffWrite(const char *file, const ArrayRGB &rgb, const std::string &profile, bool adj_following_cells)
+void TiffWrite(const char *file, const ArrayRGB &rgb, const string &profile, bool adj_following_cells)
 {
     float gamma = rgb.gamma;
     if (!rgb.from_16bits)
@@ -194,13 +206,13 @@ void TiffWrite(const char *file, const ArrayRGB &rgb, const std::string &profile
         TIFFSetField(out, TIFFTAG_YRESOLUTION, (float)rgb.dpi);
         if (profile != "")  // rgb image profile to be assigned (oiverride any existing)
         {
-            std::ifstream profilestream(profile, std::ios::binary);
+            ifstream profilestream(profile, ios::binary);
             if (profilestream.fail())
                 throw "File could not be opened";
-            std::vector<char>  profileimage;
-            profilestream.seekg(0, std::ios_base::end);
+            vector<char>  profileimage;
+            profilestream.seekg(0, ios_base::end);
             auto size = profilestream.tellg();
-            profilestream.seekg(0, std::ios_base::beg);
+            profilestream.seekg(0, ios_base::beg);
             profileimage.resize(size);
             profilestream.read(profileimage.data(), size);
             TIFFSetField(out, TIFFTAG_ICCPROFILE, (int)size, profileimage.data());
@@ -211,16 +223,16 @@ void TiffWrite(const char *file, const ArrayRGB &rgb, const std::string &profile
         }
 
         tsize_t linebytes = sampleperpixel * rgb.nc;
-        std::vector<unsigned char> buf(linebytes);
+        vector<unsigned char> buf(linebytes);
 
         // We set the strip size of the file to be size of one row of pixels
         TIFFSetField(out, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(out, rgb.nc*sampleperpixel));
-        std::vector<std::array<uint8, 3>> image(rgb.nr*rgb.nc);
-        //std::unique_ptr<uint32[]> image(new uint32[rgb.nr*rgb.nc]);
+        vector<array<uint8, 3>> image(rgb.nr*rgb.nc);
+        //unique_ptr<uint32[]> image(new uint32[rgb.nr*rgb.nc]);
         auto igamma = 1/gamma;
-        auto one_channel_to_8 = [](const std::vector<float> &image_ch, int cols, float inv_gamma) {
+        auto one_channel_to_8 = [](const vector<float> &image_ch, int cols, float inv_gamma) {
             float resid = 0;
-            std::vector<uint8> ret(image_ch.size());
+            vector<uint8> ret(image_ch.size());
             for (int i = 0; i < ret.size(); i++)
             {
                 if (i % cols==0)    // No offset at start of each row
@@ -244,9 +256,9 @@ void TiffWrite(const char *file, const ArrayRGB &rgb, const std::string &profile
             }
             return ret;
         };
-        std::vector<uint8> red = one_channel_to_8(rgb.v[0], rgb.nc, igamma);
-        std::vector<uint8> green = one_channel_to_8(rgb.v[1], rgb.nc, igamma);
-        std::vector<uint8> blue = one_channel_to_8(rgb.v[2], rgb.nc, igamma);
+        vector<uint8> red = one_channel_to_8(rgb.v[0], rgb.nc, igamma);
+        vector<uint8> green = one_channel_to_8(rgb.v[1], rgb.nc, igamma);
+        vector<uint8> blue = one_channel_to_8(rgb.v[2], rgb.nc, igamma);
 
         for (int r = 0; r < rgb.nr; r++)
             for (int c = 0; c < rgb.nc; c++)
@@ -285,13 +297,13 @@ void TiffWrite(const char *file, const ArrayRGB &rgb, const std::string &profile
         TIFFSetField(out, TIFFTAG_YRESOLUTION, (float)rgb.dpi);
         if (profile != "")
         {
-            std::ifstream profilestream(profile, std::ios::binary);
+            ifstream profilestream(profile, ios::binary);
             if (profilestream.fail())
                 throw "File could not be opened";
-            std::vector<char>  profileimage;
-            profilestream.seekg(0, std::ios_base::end);
+            vector<char>  profileimage;
+            profilestream.seekg(0, ios_base::end);
             auto size = profilestream.tellg();
-            profilestream.seekg(0, std::ios_base::beg);
+            profilestream.seekg(0, ios_base::beg);
             profileimage.resize(size);
             profilestream.read(profileimage.data(), size);
             TIFFSetField(out, TIFFTAG_ICCPROFILE, (int)size, profileimage.data());
@@ -302,7 +314,7 @@ void TiffWrite(const char *file, const ArrayRGB &rgb, const std::string &profile
         }
 
 
-        std::vector<std::array<uint16, 3>> buf(rgb.nc);
+        vector<array<uint16, 3>> buf(rgb.nc);
         // We set the strip size of the file to be size of one row of pixels
         TIFFSetField(out, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(out, rgb.nc*sampleperpixel));
 
@@ -324,7 +336,7 @@ void TiffWrite(const char *file, const ArrayRGB &rgb, const std::string &profile
     }
 }
 
-std::tuple<ArrayRGB,int,int> getReflArea(const int dpi, const int use_this_size_if_not_0)
+tuple<ArrayRGB,int,int> getReflArea(const int dpi, const int use_this_size_if_not_0)
 {
     auto actual_dpi = !use_this_size_if_not_0 ? dpi : use_this_size_if_not_0;
     float gain = 1;
@@ -347,8 +359,8 @@ std::tuple<ArrayRGB,int,int> getReflArea(const int dpi, const int use_this_size_
     int refl_size = (int)round(actual_dpi*2+1);
     // reflection function based on 200 DPI
     const float refl_fraction = .20f;
-    std::array<float, 6> fvc{ 1.361e-15f, -3.737e-12f, 4.042e-09f, -2.156e-06f, 0.0005713f, 0 };
-    std::array<float, 8> fhc{ 7.729e-20f,-1.842e-16f,1.793e-13f,-9.23e-11f,2.756e-08f,-5.168e-06f,0.0006892f,0 };
+    array<float, 6> fvc{ 1.361e-15f, -3.737e-12f, 4.042e-09f, -2.156e-06f, 0.0005713f, 0 };
+    array<float, 8> fhc{ 7.729e-20f,-1.842e-16f,1.793e-13f,-9.23e-11f,2.756e-08f,-5.168e-06f,0.0006892f,0 };
     //fv = @(x) .9574*(1.361e-15*x.^5-3.737e-12*x.^4+4.042e-09*x.^3-2.156e-06*x.^2+0.0005713*x);
     //fh = @(x) 7.729e-20*x.^7-1.842e-16*x.^6+1.793e-13*x.^5-9.23e-11*x.^4+2.756e-08*x.^3-5.168e-06*x.^2+0.0006892*x;
     auto fv = [&fvc](float x) {
@@ -377,7 +389,7 @@ std::tuple<ArrayRGB,int,int> getReflArea(const int dpi, const int use_this_size_
             // 3mm white/black squares. They are both quite good but the second is slightly better.
             // The first one is remains, but is disabled.
             if (false) {
-                float offset = (ret.nc-1)/2;
+                float offset = (ret.nc-1)/2.0f;
 				float offx = i-offset;
 				float offy = ii-offset;
                 float dist = sqrt(1.7f*offx*offx + 1.5f*offy*offy);
@@ -446,9 +458,9 @@ ArrayRGB generate_reflected_light_estimate(const ArrayRGB& image_reduced, const 
 			}
 		}
 	};
-	auto c0 = std::async(launchType, fix, 0, image_reduced.nr - refl_area.nr + 1, 0);
-	auto c1 = std::async(launchType, fix, 0, image_reduced.nr - refl_area.nr + 1, 1);
-	auto c2 = std::async(launchType, fix, 0, image_reduced.nr - refl_area.nr + 1, 2);
+	auto c0 = async(launchType, fix, 0, image_reduced.nr - refl_area.nr + 1, 0);
+	auto c1 = async(launchType, fix, 0, image_reduced.nr - refl_area.nr + 1, 1);
+	auto c2 = async(launchType, fix, 0, image_reduced.nr - refl_area.nr + 1, 2);
 	c0.get(); c1.get(); c2.get();
 	return image_correction;
 }
