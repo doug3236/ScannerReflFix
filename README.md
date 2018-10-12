@@ -1,5 +1,5 @@
 # ScannerReflFix
-Model and remove large area glare from Epson V850 reflection scanns
+Model and remove large area glare from Epson V850 reflection scans
 
 This program is designed to address a major issue of the Epson V850 scanner caused by re-reflected light.
 In short, very light portions of a scanned image reflect large amounts of light back to the frosted surfaces
