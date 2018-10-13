@@ -50,6 +50,7 @@ using std::tuple;
 
 
 class ArrayRGB;
+void attach_profile(const std::string & profile, TIFF * out, const ArrayRGB & rgb);
 // Functions
 void TiffWrite(const char *file, const ArrayRGB &rgb, const string &profile, bool adj_following_cells = true);
 ArrayRGB TiffRead(const char *filename, float gamma);

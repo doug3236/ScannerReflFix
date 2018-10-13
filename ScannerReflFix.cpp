@@ -224,9 +224,9 @@ int main(int argc, char const **argv)
         }
 		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;
 		if (force_ouput_bits==16)
-            image_in.from_16bits = false;
-        else if (force_ouput_bits == 8)
             image_in.from_16bits = true;
+        else if (force_ouput_bits == 8)
+            image_in.from_16bits = false;
 
         TiffWrite(cmdArgs[argCnt-1].c_str(), image_in, profile_name);
 		if (print_line_and_time) cout << __LINE__ << "  " << timer.stop() << endl;

@@ -36,16 +36,14 @@ ArrayRGB TiffRead(const char *filename, float gamma)
     ArrayRGB rgb;               // ArrayRGB to be returned
     uint32 prof_size = 0;       // size of byte arrray for storing profile if present
     uint8 *prof_data = nullptr; // ptr to byte array
-    uint16 bits;                // 8 or 16 bits
+    uint16 bits;                // image was from 8 or 16 bit tiff
     uint32 height;              // image pixe sizes
     uint32 width;
     uint32 size;                // width*height
-    uint16 planarconfig;
-    uint16  samplesperpixel;
+    uint16 planarconfig;        // pixel tiff storage orientation
+    float local_dpi;
 
-    int dpi;
     vector<uint32> image;
-    //uint32 *image;      // packed RGB array 0xRRGGBB, refers to either a full, synthesized colorspace or tiff image
     TIFF *tif;
 
     tif = TIFFOpen(filename, "r");
@@ -54,29 +52,27 @@ ArrayRGB TiffRead(const char *filename, float gamma)
         return rgb;
     }
     TIFFGetField(tif, TIFFTAG_BITSPERSAMPLE, &bits);
-    float local_dpi;
     TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width);
     TIFFGetField(tif, TIFFTAG_IMAGELENGTH, &height);
     TIFFGetField(tif, TIFFTAG_XRESOLUTION, &local_dpi);       // assume Xand Y the same
     TIFFGetField(tif, TIFFTAG_ICCPROFILE, &prof_size, &prof_data);
     TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &planarconfig);
-    TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &samplesperpixel);
     if (prof_size!=0)
     {
         rgb.profile.resize(prof_size);
         memcpy(rgb.profile.data(), prof_data, prof_size);
     }
 
-    dpi = (int)local_dpi;
     size = width*height;
     rgb.resize(height, width);
     rgb.nc = width;
     rgb.nr = height;
-    rgb.dpi = dpi;
+    rgb.dpi = (int)local_dpi;
     rgb.gamma = gamma;
-    if (bits==8) {
+    if (bits==8 || planarconfig != PLANARCONFIG_CONTIG) {
+        if (bits != 16)
+            std::cout << "16 bit tif file not recognized, reverting to 8 bit read.\n";
         rgb.from_16bits = false;
-        //image = (uint32*)_TIFFmalloc(height*width*sizeof(uint32));
         image.resize(height*width);
         int istatus = TIFFReadRGBAImage(tif, width, height, image.data());
         if (istatus==1) {
@@ -126,6 +122,130 @@ ArrayRGB TiffRead(const char *filename, float gamma)
     return rgb;
 }
 
+void attach_profile(const std::string & profile, TIFF * out, const ArrayRGB & rgb)
+{
+    // If profile is requested, read the profile file and store it in tiff image.
+    if (profile != "")
+    {
+        ifstream profilestream(profile, ios::binary);
+        if (profilestream.fail())
+            throw "File could not be opened";
+        vector<char>  profileimage;
+        profilestream.seekg(0, ios_base::end);
+        auto size = profilestream.tellg();
+        profilestream.seekg(0, ios_base::beg);
+        profileimage.resize(size);
+        profilestream.read(profileimage.data(), size);
+        TIFFSetField(out, TIFFTAG_ICCPROFILE, (int)size, profileimage.data());
+    }
+    // rgb image already has a profile save it to new tiff
+    else if (rgb.profile.size() != 0)
+    {
+        TIFFSetField(out, TIFFTAG_ICCPROFILE, (uint32)(rgb.profile.size()), rgb.profile.data());
+    }
+}
+
+void TiffWrite(const char *file, const ArrayRGB &rgb, const string &profile, bool adj_following_cells)
+{
+    float gamma = rgb.gamma;
+    int sampleperpixel=3;
+    TIFF *out = TIFFOpen(file, "w");
+    TIFFSetField(out, TIFFTAG_IMAGEWIDTH, rgb.nc);  // set the width of the image
+    TIFFSetField(out, TIFFTAG_IMAGELENGTH, rgb.nr);    // set the height of the image
+    TIFFSetField(out, TIFFTAG_SAMPLESPERPIXEL, sampleperpixel);   // set number of channels per pixel
+    TIFFSetField(out, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);    // set the origin of the image.
+                                                                    //   Some other essential fields to set that you do not have to understand for now.
+    TIFFSetField(out, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
+    TIFFSetField(out, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
+    TIFFSetField(out, TIFFTAG_XRESOLUTION, (float)rgb.dpi);
+    TIFFSetField(out, TIFFTAG_YRESOLUTION, (float)rgb.dpi);
+    attach_profile(profile, out, rgb);
+    if (!rgb.from_16bits)
+    {
+        TIFFSetField(out, TIFFTAG_BITSPERSAMPLE, 8);    // set the size of the channels
+        tsize_t linebytes = sampleperpixel * rgb.nc;
+        vector<unsigned char> buf(linebytes);
+
+        // We set the strip size of the file to be size of one row of pixels
+        TIFFSetField(out, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(out, rgb.nc*sampleperpixel));
+        vector<array<uint8, 3>> image(rgb.nr*rgb.nc);
+        //unique_ptr<uint32[]> image(new uint32[rgb.nr*rgb.nc]);
+        auto igamma = 1 / gamma;
+        auto one_channel_to_8 = [](const vector<float> &image_ch, int cols, float inv_gamma) {
+            float resid = 0;
+            vector<uint8> ret(image_ch.size());
+            for (int i = 0; i < ret.size(); i++)
+            {
+                if (i % cols == 0)    // No offset at start of each row
+                    resid = 0;
+                float tmp = 255 * pow(image_ch[i], inv_gamma);
+                if (tmp > 255) tmp = 255;
+                if (tmp < 0) tmp = 0;
+                uint8 tmpr = static_cast<uint8>(tmp + .5);
+                resid += tmp - tmpr;
+                if (resid > .5 && tmpr < 255)
+                {
+                    resid -= 1;
+                    tmpr++;
+                }
+                else if (resid < -.5)
+                {
+                    resid += 1;
+                    tmpr--;
+                }
+                ret[i] = tmpr;
+            }
+            return ret;
+        };
+        vector<uint8> red = one_channel_to_8(rgb.v[0], rgb.nc, igamma);
+        vector<uint8> green = one_channel_to_8(rgb.v[1], rgb.nc, igamma);
+        vector<uint8> blue = one_channel_to_8(rgb.v[2], rgb.nc, igamma);
+
+        for (int r = 0; r < rgb.nr; r++)
+            for (int c = 0; c < rgb.nc; c++)
+            {
+                int offset = r * rgb.nc + c;
+                //image[offset] = red[offset] | green[offset] << 8 | blue[offset] << 16 | 0xff000000;
+                image[offset][0] = red[offset];
+                image[offset][1] = green[offset];
+                image[offset][2] = blue[offset];
+            }
+
+        //Now writing image to the file one strip at a time
+        for (int row = 0; row < rgb.nr; row++)
+        {
+            //memcpy(buf, &image[row*linebytes/sizeof(uint32)], linebytes);    // check the index here, and figure out why not using h*linebytes
+            memcpy(buf.data(), &image[row*rgb.nc], linebytes);    // check the index here, and figure out why not using h*linebytes
+            if (TIFFWriteScanline(out, buf.data(), row, 0) < 0)
+                break;
+        }
+        TIFFClose(out);
+    }
+    else
+    {
+        TIFFSetField(out, TIFFTAG_BITSPERSAMPLE, 16);    // set the size of the channels
+        // 16  bit write
+        vector<array<uint16, 3>> buf(rgb.nc);
+        // We set the strip size of the file to be size of one row of pixels
+        TIFFSetField(out, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(out, rgb.nc*sampleperpixel));
+
+        auto igamma = 1 / gamma;
+
+        for (int r = 0; r < rgb.nr; r++)
+        {
+            for (int c = 0; c < rgb.nc; c++)
+            {
+                for (int color = 0; color < 3; color++)
+                {
+                    buf[c][color] = static_cast<uint16>(pow(std::clamp(rgb(r, c, color), 0.f, 1.f), igamma) * 65535);
+                }
+            }
+            if (TIFFWriteScanline(out, buf.data(), r, 0) < 0)
+                throw "Error writing tif";
+        }
+        TIFFClose(out);
+    }
+}
 
 
 
@@ -187,154 +307,6 @@ void ArrayRGB::scale(float factor)    // scale all array values by factor
 }
 
 
-void TiffWrite(const char *file, const ArrayRGB &rgb, const string &profile, bool adj_following_cells)
-{
-    float gamma = rgb.gamma;
-    if (!rgb.from_16bits)
-    {
-        TIFF *out = TIFFOpen(file, "w");
-        int sampleperpixel = 3;
-        TIFFSetField(out, TIFFTAG_IMAGEWIDTH, rgb.nc);  // set the width of the image
-        TIFFSetField(out, TIFFTAG_IMAGELENGTH, rgb.nr);    // set the height of the image
-        TIFFSetField(out, TIFFTAG_SAMPLESPERPIXEL, sampleperpixel);   // set number of channels per pixel
-        TIFFSetField(out, TIFFTAG_BITSPERSAMPLE, 8);    // set the size of the channels
-        TIFFSetField(out, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);    // set the origin of the image.
-                                                                        //   Some other essential fields to set that you do not have to understand for now.
-        TIFFSetField(out, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
-        TIFFSetField(out, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
-        TIFFSetField(out, TIFFTAG_XRESOLUTION, (float)rgb.dpi);
-        TIFFSetField(out, TIFFTAG_YRESOLUTION, (float)rgb.dpi);
-        if (profile != "")  // rgb image profile to be assigned (oiverride any existing)
-        {
-            ifstream profilestream(profile, ios::binary);
-            if (profilestream.fail())
-                throw "File could not be opened";
-            vector<char>  profileimage;
-            profilestream.seekg(0, ios_base::end);
-            auto size = profilestream.tellg();
-            profilestream.seekg(0, ios_base::beg);
-            profileimage.resize(size);
-            profilestream.read(profileimage.data(), size);
-            TIFFSetField(out, TIFFTAG_ICCPROFILE, (int)size, profileimage.data());
-        }
-        else if (rgb.profile.size() != 0)   // rgb image already has a profile
-        {
-            TIFFSetField(out, TIFFTAG_ICCPROFILE, (uint32)(rgb.profile.size()), rgb.profile.data());
-        }
-
-        tsize_t linebytes = sampleperpixel * rgb.nc;
-        vector<unsigned char> buf(linebytes);
-
-        // We set the strip size of the file to be size of one row of pixels
-        TIFFSetField(out, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(out, rgb.nc*sampleperpixel));
-        vector<array<uint8, 3>> image(rgb.nr*rgb.nc);
-        //unique_ptr<uint32[]> image(new uint32[rgb.nr*rgb.nc]);
-        auto igamma = 1/gamma;
-        auto one_channel_to_8 = [](const vector<float> &image_ch, int cols, float inv_gamma) {
-            float resid = 0;
-            vector<uint8> ret(image_ch.size());
-            for (int i = 0; i < ret.size(); i++)
-            {
-                if (i % cols==0)    // No offset at start of each row
-                    resid = 0;
-                float tmp = 255*pow(image_ch[i], inv_gamma);
-                if (tmp > 255) tmp = 255;
-                if (tmp < 0) tmp = 0;
-                uint8 tmpr = static_cast<uint8>(tmp+.5);
-                resid += tmp - tmpr;
-                if (resid > .5 && tmpr < 255)
-                {
-                    resid -= 1;
-                    tmpr++;
-                }
-                else if (resid < -.5)
-                {
-                    resid += 1;
-                    tmpr--;
-                }
-                ret[i] = tmpr;
-            }
-            return ret;
-        };
-        vector<uint8> red = one_channel_to_8(rgb.v[0], rgb.nc, igamma);
-        vector<uint8> green = one_channel_to_8(rgb.v[1], rgb.nc, igamma);
-        vector<uint8> blue = one_channel_to_8(rgb.v[2], rgb.nc, igamma);
-
-        for (int r = 0; r < rgb.nr; r++)
-            for (int c = 0; c < rgb.nc; c++)
-            {
-                int offset = r*rgb.nc+c;
-                //image[offset] = red[offset] | green[offset] << 8 | blue[offset] << 16 | 0xff000000;
-                image[offset][0] = red[offset];
-                image[offset][1] = green[offset];
-                image[offset][2] = blue[offset];
-            }
-
-        //Now writing image to the file one strip at a time
-        for (int row = 0; row < rgb.nr; row++)
-        {
-            //memcpy(buf, &image[row*linebytes/sizeof(uint32)], linebytes);    // check the index here, and figure out why not using h*linebytes
-            memcpy(buf.data(), &image[row*rgb.nc], linebytes);    // check the index here, and figure out why not using h*linebytes
-            if (TIFFWriteScanline(out, buf.data(), row, 0) < 0)
-                break;
-        }
-        TIFFClose(out);
-    }
-    else
-    {
-        // 16  bit write
-        TIFF *out = TIFFOpen(file, "w");
-        int sampleperpixel = 3;
-        TIFFSetField(out, TIFFTAG_IMAGEWIDTH, rgb.nc);  // set the width of the image
-        TIFFSetField(out, TIFFTAG_IMAGELENGTH, rgb.nr);    // set the height of the image
-        TIFFSetField(out, TIFFTAG_SAMPLESPERPIXEL, sampleperpixel);   // set number of channels per pixel
-        TIFFSetField(out, TIFFTAG_BITSPERSAMPLE, 16);    // set the size of the channels
-        TIFFSetField(out, TIFFTAG_ORIENTATION, ORIENTATION_TOPLEFT);    // set the origin of the image.
-                                                                        //   Some other essential fields to set that you do not have to understand for now.
-        TIFFSetField(out, TIFFTAG_PLANARCONFIG, PLANARCONFIG_CONTIG);
-        TIFFSetField(out, TIFFTAG_PHOTOMETRIC, PHOTOMETRIC_RGB);
-        TIFFSetField(out, TIFFTAG_XRESOLUTION, (float)rgb.dpi);
-        TIFFSetField(out, TIFFTAG_YRESOLUTION, (float)rgb.dpi);
-        if (profile != "")
-        {
-            ifstream profilestream(profile, ios::binary);
-            if (profilestream.fail())
-                throw "File could not be opened";
-            vector<char>  profileimage;
-            profilestream.seekg(0, ios_base::end);
-            auto size = profilestream.tellg();
-            profilestream.seekg(0, ios_base::beg);
-            profileimage.resize(size);
-            profilestream.read(profileimage.data(), size);
-            TIFFSetField(out, TIFFTAG_ICCPROFILE, (int)size, profileimage.data());
-        }
-        else if (rgb.profile.size() != 0)   // rgb image already has a profile
-        {
-            TIFFSetField(out, TIFFTAG_ICCPROFILE, (uint32)(rgb.profile.size()), rgb.profile.data());
-        }
-
-
-        vector<array<uint16, 3>> buf(rgb.nc);
-        // We set the strip size of the file to be size of one row of pixels
-        TIFFSetField(out, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(out, rgb.nc*sampleperpixel));
-
-        auto igamma = 1/gamma;
-
-        for (int r = 0; r < rgb.nr; r++)
-        {
-            for (int c = 0; c < rgb.nc; c++)
-            {
-                for (int color = 0; color < 3; color++)
-                {
-                    buf[c][color] = static_cast<uint16>(pow(std::clamp(rgb(r, c, color), 0.f, 1.f), igamma)*65535);
-                }
-            }
-            if (TIFFWriteScanline(out, buf.data(), r, 0) < 0)
-                throw "Error writing tif";
-        }
-        TIFFClose(out);
-    }
-}
 
 tuple<ArrayRGB,int,int> getReflArea(const int dpi, const int use_this_size_if_not_0)
 {
