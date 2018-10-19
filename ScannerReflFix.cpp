@@ -86,7 +86,7 @@ int main(int argc, char const **argv)
 			"  -T                   Show line numbers and accumulated time.\n" <<
 			"  -N                   Don't Restore gain after subtracting reflection (Diagnostic only)\n" <<
 			"  -R                   Simulated scanner by adding reflected light\n" <<
-            "  -Z                   Average multiple input files with No Refl. Correction " <<
+            "  -Z                   Average multiple input files with No Refl. Correction.\n\n" <<
             "scannerreflfix.exe models and removes re-reflected light from an area\n"
 			"approx 1\" around scanned RGB values for the Epson V850 scanner.\n";
             exit(0);
