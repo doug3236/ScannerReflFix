@@ -69,8 +69,8 @@ ArrayRGB TiffRead(const char *filename, float gamma)
     rgb.nr = height;
     rgb.dpi = (int)local_dpi;
     rgb.gamma = gamma;
-    if (bits==8 || planarconfig != PLANARCONFIG_CONTIG) {
-        if (bits != 16)
+    if (planarconfig != PLANARCONFIG_CONTIG || bits == 8) {
+        if (bits == 16)
             std::cout << "16 bit tif file not recognized, reverting to 8 bit read.\n";
         rgb.from_16bits = false;
         image.resize(height*width);
