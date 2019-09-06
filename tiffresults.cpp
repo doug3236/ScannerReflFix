@@ -102,8 +102,7 @@ ArrayRGB TiffRead(const char *filename, float gamma)
         TIFFGetField(tif, TIFFTAG_IMAGEWIDTH, &width);
         TIFFGetField(tif, TIFFTAG_PLANARCONFIG, &config);
         TIFFGetField(tif, TIFFTAG_SAMPLESPERPIXEL, &nsamples);
-        auto xxx = TIFFScanlineSize(tif);
-        vector<uint16_t> bufs(10000);
+        vector<uint16_t> bufs(TIFFScanlineSize(tif));
         if (config == PLANARCONFIG_CONTIG) {
             for (row = 0; row < height; row++)
             {
